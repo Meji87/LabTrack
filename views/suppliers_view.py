@@ -25,7 +25,7 @@ class ProveedoresView(BaseView):
 
     def _build(self):
         hdr = self.make_header(self, "Proveedores",
-                               "+ Nuevo Proveedor", self._nuevo, solo_admin=True)
+                               "+ Nuevo Proveedor", self._nuevo)
         hdr.pack(fill="x")
 
         # Filtros

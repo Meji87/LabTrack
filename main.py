@@ -7,6 +7,7 @@ Ejecutar: python main.py
 
 import os
 import sys
+import getpass
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
@@ -18,7 +19,8 @@ from tkinter import messagebox
 
 from config import (APP_TITULO, APP_ANCHO, APP_ALTO, APP_MIN_ANCHO, APP_MIN_ALTO,
                     COLOR_SIDEBAR_BG, COLOR_SIDEBAR_HOVER, COLOR_SIDEBAR_ACTIVE,
-                    COLOR_ACCENT, COLOR_DANGER, COLOR_WARNING)
+                    COLOR_ACCENT, COLOR_ACCENT_HOVER, COLOR_DANGER, COLOR_WARNING,
+                    VERSION, AUTOR, CONTACTO)
 
 # ─── Configuración global CTk ──────────────────────────────
 ctk.set_appearance_mode("dark")
@@ -49,7 +51,8 @@ class LabTrackApp(ctk.CTk):
         self._container = ctk.CTkFrame(self, fg_color="transparent")
         self._container.pack(fill="both", expand=True)
 
-        self._show_login()
+        self._init_session()
+        self._show_main()
 
     # ── Utilidades de ventana ─────────────────────────────
 
@@ -76,18 +79,23 @@ class LabTrackApp(ctk.CTk):
             pass  # PIL no disponible o icono inválido → sin icono
 
     # ─────────────────────────────────────────────────────
-    #  PANTALLA DE LOGIN
+    #  SESIÓN (usuario Windows)
     # ─────────────────────────────────────────────────────
 
-    def _show_login(self):
-        self._clear_root()
-        from views.login_view import LoginView
-        LoginView(self._container, on_login_success=self._on_login).pack(
-            fill="both", expand=True)
-
-    def _on_login(self, user):
-        self.current_user = user
-        self._show_main()
+    def _init_session(self):
+        from database import get_session, Usuario
+        windows_user = getpass.getuser()
+        email_local  = f"{windows_user}@labtrack.local"
+        with get_session() as s:
+            usuario = s.query(Usuario).filter_by(email=email_local).first()
+            if usuario is None:
+                usuario = Usuario(nombre=windows_user, email=email_local, rol="usuario")
+                usuario.set_password(windows_user)
+                s.add(usuario)
+                s.commit()
+            s.refresh(usuario)
+            s.expunge(usuario)
+        self.current_user = usuario
 
     # ─────────────────────────────────────────────────────
     #  PANTALLA PRINCIPAL  (sidebar + contenido)
@@ -148,14 +156,12 @@ class LabTrackApp(ctk.CTk):
         ctk.CTkFrame(sb, height=1, fg_color="#2d333b").pack(fill="x", padx=12)
 
         # ── Info usuario ─────────────────────────────────
-        nombre = self.current_user.nombre if self.current_user else "—"
-        rol    = self.current_user.rol    if self.current_user else ""
+        nombre = getpass.getuser()
         ctk.CTkLabel(sb, text=nombre,
                      font=ctk.CTkFont(size=12, weight="bold"),
                      text_color="white", anchor="w").pack(
             fill="x", padx=16, pady=(10, 0))
-        ctk.CTkLabel(sb,
-                     text="Administrador" if rol == "admin" else "Usuario",
+        ctk.CTkLabel(sb, text="Usuario",
                      font=ctk.CTkFont(size=10), text_color=COLOR_ACCENT, anchor="w").pack(
             fill="x", padx=16)
 
@@ -170,9 +176,8 @@ class LabTrackApp(ctk.CTk):
             ("recepciones", "  📥  Recepciones"),
             ("movimientos", "  🔄  Movimientos"),
             ("alertas",     "  ⚠   Alertas"),
+            ("admin",       "  ⚙   Admin"),
         ]
-        if self.current_user and self.current_user.es_admin:
-            nav_items.append(("admin", "  ⚙   Admin"))
 
         for key, label in nav_items:
             btn = ctk.CTkButton(
@@ -190,13 +195,27 @@ class LabTrackApp(ctk.CTk):
             btn.pack(fill="x", padx=8, pady=2)
             self._nav_buttons[key] = btn
 
-        # ── Espacio flexible → empuja logout al fondo ─────
+        # ── Espacio flexible → empuja botones al fondo ─────
         ctk.CTkFrame(sb, fg_color="transparent").pack(fill="both", expand=True)
 
         ctk.CTkFrame(sb, height=1, fg_color="#2d333b").pack(fill="x", padx=12, pady=4)
+
         ctk.CTkButton(
             sb,
-            text="  🚪  Cerrar sesión",
+            text="  ℹ   Acerca de",
+            anchor="w",
+            font=ctk.CTkFont(size=12),
+            fg_color="transparent",
+            hover_color=COLOR_SIDEBAR_HOVER,
+            text_color="#9ca3af",
+            height=34,
+            corner_radius=6,
+            command=self._show_about,
+        ).pack(fill="x", padx=8, pady=(0, 2))
+
+        ctk.CTkButton(
+            sb,
+            text="  🚪  Salir",
             anchor="w",
             font=ctk.CTkFont(size=12),
             fg_color="transparent",
@@ -204,7 +223,7 @@ class LabTrackApp(ctk.CTk):
             text_color="#9ca3af",
             height=36,
             corner_radius=6,
-            command=self._logout,
+            command=self.destroy,
         ).pack(fill="x", padx=8, pady=(0, 12))
 
     # ─────────────────────────────────────────────────────
@@ -212,6 +231,11 @@ class LabTrackApp(ctk.CTk):
     # ─────────────────────────────────────────────────────
 
     def _navigate(self, key: str):
+        # Pedir contraseña de admin antes de cargar esa vista
+        if key == "admin":
+            if not self._ask_admin_password():
+                return
+
         # Resaltar botón activo
         for k, btn in self._nav_buttons.items():
             active = (k == key)
@@ -264,7 +288,7 @@ class LabTrackApp(ctk.CTk):
                 from views.alerts_view import AlertasView
                 return AlertasView(self._content, self)
 
-            if key == "admin" and self.current_user and self.current_user.es_admin:
+            if key == "admin":
                 from views.admin_view import AdminView
                 return AdminView(self._content, self)
 
@@ -299,14 +323,100 @@ class LabTrackApp(ctk.CTk):
             pass
 
     # ─────────────────────────────────────────────────────
-    #  LOGOUT
+    #  CONTRASEÑA DE ADMINISTRADOR
     # ─────────────────────────────────────────────────────
 
-    def _logout(self):
-        self.current_user  = None
-        self._active_view  = None
-        self._nav_buttons  = {}
-        self._show_login()
+    def _ask_admin_password(self) -> bool:
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Acceso restringido")
+        dialog.geometry("360x180")
+        dialog.resizable(False, False)
+        dialog.grab_set()
+        dialog.focus_set()
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth()  - 360) // 2
+        y = (dialog.winfo_screenheight() - 180) // 2
+        dialog.geometry(f"+{x}+{y}")
+        if hasattr(self, "_ico_path") and os.path.isfile(self._ico_path):
+            dialog.after(100, lambda: dialog.iconbitmap(self._ico_path))
+
+        ctk.CTkLabel(dialog, text="Contraseña de administrador:",
+                     font=ctk.CTkFont(size=13)).pack(pady=(20, 8))
+
+        result: dict = {"password": None}
+        entry = ctk.CTkEntry(dialog, show="*", width=280, height=34)
+        entry.pack(padx=20)
+        entry.focus_set()
+
+        def _confirm():
+            result["password"] = entry.get()
+            dialog.destroy()
+
+        entry.bind("<Return>", lambda _e: _confirm())
+        entry.bind("<Escape>", lambda _e: dialog.destroy())
+
+        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        btn_frame.pack(pady=16)
+        ctk.CTkButton(btn_frame, text="Cancelar", width=100,
+                      fg_color="#374151", hover_color="#4b5563",
+                      command=dialog.destroy).pack(side="left", padx=8)
+        ctk.CTkButton(btn_frame, text="Aceptar", width=100,
+                      fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT_HOVER,
+                      command=_confirm).pack(side="left", padx=8)
+
+        self.wait_window(dialog)
+
+        password = result.get("password")
+        if not password:
+            return False
+
+        try:
+            from database import get_session, Usuario
+            with get_session() as s:
+                admin = s.query(Usuario).filter_by(rol="admin").first()
+                if admin and admin.check_password(password):
+                    return True
+        except Exception:
+            pass
+
+        messagebox.showerror("Acceso denegado", "Contraseña incorrecta.")
+        return False
+
+    # ─────────────────────────────────────────────────────
+    #  ACERCA DE
+    # ─────────────────────────────────────────────────────
+
+    def _show_about(self):
+        from views.base_view import ModalBase
+        modal = ModalBase(self, "Acerca de LabTrack", ancho=380, alto=340)
+        if os.path.isfile(_ICON_PATH):
+            try:
+                from PIL import Image
+                img = Image.open(_ICON_PATH).resize((64, 64), Image.LANCZOS)
+                ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(64, 64))
+                ctk.CTkLabel(modal.content, image=ctk_img, text="").grid(
+                    row=0, column=0, columnspan=2, pady=(8, 6))
+                modal._about_img_ref = ctk_img
+            except Exception:
+                pass
+
+        for i, (lbl, val) in enumerate([
+            ("Aplicación", APP_TITULO),
+            ("Versión",    VERSION),
+            ("Autor",      AUTOR),
+            ("Contacto",   CONTACTO),
+        ], start=1):
+            ctk.CTkLabel(modal.content, text=f"{lbl}:", text_color="#9ca3af",
+                         anchor="e", font=ctk.CTkFont(size=12)).grid(
+                row=i, column=0, sticky="e", padx=(4, 10), pady=5)
+            ctk.CTkLabel(modal.content, text=val, text_color="white",
+                         anchor="w", font=ctk.CTkFont(size=12)).grid(
+                row=i, column=1, sticky="w", padx=4, pady=5)
+
+        modal.content.grid_columnconfigure(1, weight=1)
+        ctk.CTkButton(modal.btn_bar, text="Cerrar", command=modal.destroy,
+                      fg_color="#374151", hover_color="#4b5563",
+                      width=100).pack(side="right")
 
     # ─────────────────────────────────────────────────────
     #  HELPERS

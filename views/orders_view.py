@@ -60,7 +60,7 @@ class PedidosView(BaseView):
             ("fecha",     "Fecha",       120),
             ("creado",    "Creado por",  120),
         ]
-        tframe, self.tree = self.make_table(self, cols)
+        tframe, self.tree = self.make_sortable_table(self, cols)
         tframe.pack(fill="both", expand=True, padx=10, pady=6)
         self.tree.bind("<Double-1>", lambda _: self._ver_detalle())
 
@@ -321,6 +321,11 @@ class NuevoPedidoModal(ctk.CTkToplevel):
         self._notas_entry.grid(row=0, column=3, sticky="ew")
         row0.grid_columnconfigure(3, weight=1)
 
+        self._email_var = tk.BooleanVar()
+        ctk.CTkCheckBox(row0, text="📧 Enviar email al proveedor al guardar",
+                        variable=self._email_var).grid(
+            row=1, column=0, columnspan=4, sticky="w", padx=(0, 8), pady=(6, 0))
+
         # Sección añadir producto
         sep1 = ctk.CTkFrame(main, fg_color="#21262d", corner_radius=8)
         sep1.grid(row=1, column=0, sticky="ew", pady=(0, 8))
@@ -346,11 +351,6 @@ class NuevoPedidoModal(ctk.CTkToplevel):
                      font=ctk.CTkFont(size=12)).pack(side="left", padx=(0, 4))
         self._cant_entry = ctk.CTkEntry(add_row, width=70, height=32, placeholder_text="1")
         self._cant_entry.pack(side="left", padx=(0, 8))
-
-        ctk.CTkLabel(add_row, text="Precio:", text_color="#9ca3af",
-                     font=ctk.CTkFont(size=12)).pack(side="left", padx=(0, 4))
-        self._precio_entry = ctk.CTkEntry(add_row, width=80, height=32, placeholder_text="opt.")
-        self._precio_entry.pack(side="left", padx=(0, 8))
 
         ctk.CTkLabel(add_row, text="Notas línea:", text_color="#9ca3af",
                      font=ctk.CTkFont(size=12)).pack(side="left", padx=(0, 4))
@@ -425,12 +425,6 @@ class NuevoPedidoModal(ctk.CTkToplevel):
             return
 
         precio = None
-        precio_str = self._precio_entry.get().strip()
-        if precio_str:
-            try:
-                precio = float(precio_str)
-            except ValueError:
-                pass
 
         with get_session() as s:
             p = s.query(Producto).get(prod_id)
@@ -455,7 +449,6 @@ class NuevoPedidoModal(ctk.CTkToplevel):
         ))
         # Limpiar campos
         self._cant_entry.delete(0, "end")
-        self._precio_entry.delete(0, "end")
         self._nota_linea.delete(0, "end")
 
     def _del_linea(self):
@@ -482,6 +475,7 @@ class NuevoPedidoModal(ctk.CTkToplevel):
             messagebox.showerror("Error", "Añade al menos una línea de producto.", parent=self)
             return
 
+        pedido_id = None
         with self._get_session() as s:
             prov = s.query(Proveedor).filter_by(nombre=prov_nombre).first()
             if not prov:
@@ -504,10 +498,27 @@ class NuevoPedidoModal(ctk.CTkToplevel):
                     pedido_id=pedido.id,
                     producto_id=l["producto_id"],
                     cantidad_pedida=l["cantidad"],
-                    precio_unitario=l["precio"],
+                    precio_unitario=None,
                     notas=l["notas"],
                 ))
 
+            pedido_id = pedido.id
             s.commit()
+
+        # Enviar email si el checkbox está marcado
+        if self._email_var.get() and pedido_id:
+            try:
+                from utils.email_utils import enviar_pedido_proveedor
+                from database import Pedido as _Pedido
+                with self._get_session() as s:
+                    ped = s.query(_Pedido).get(pedido_id)
+                    if ped:
+                        ok, msg = enviar_pedido_proveedor(ped)
+                        if ok:
+                            ped.estado = "enviado"
+                            ped.fecha_envio = datetime.utcnow()
+                            s.commit()
+            except Exception:
+                pass
 
         self.destroy()

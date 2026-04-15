@@ -82,13 +82,17 @@ class MovimientosView(BaseView):
             ("usuario",  "Usuario",      110),
             ("motivo",   "Motivo",       220),
         ]
-        tframe, self.tree = self.make_table(self, cols)
+        tframe, self.tree = self.make_sortable_table(self, cols)
         tframe.pack(fill="both", expand=True, padx=10, pady=6)
 
         # Botones de acción
         bar = ctk.CTkFrame(self, fg_color="transparent", height=50)
         bar.pack(fill="x", padx=10, pady=(0, 8))
         bar.pack_propagate(False)
+
+        ctk.CTkButton(bar, text="📥 Exportar CSV", command=self._exportar_csv,
+                      fg_color="#374151", hover_color="#4b5563",
+                      width=130, height=36).pack(side="right", padx=4)
 
         ctk.CTkLabel(bar, text="Registrar:",
                      font=ctk.CTkFont(size=12, weight="bold"),
@@ -162,6 +166,40 @@ class MovimientosView(BaseView):
         m = MovimientoModal(self, "baja", self.current_user, self.get_session)
         self.wait_window(m)
         self.refresh()
+
+    def _exportar_csv(self):
+        from tkinter import filedialog
+        import csv
+        from datetime import datetime
+
+        rows = []
+        for iid in self.tree.get_children():
+            rows.append(self.tree.item(iid, "values"))
+
+        if not rows:
+            self.show_info("No hay datos para exportar.")
+            return
+
+        fecha_str = datetime.now().strftime("%Y%m%d")
+        path = filedialog.asksaveasfilename(
+            parent=self.winfo_toplevel(),
+            title="Exportar movimientos",
+            defaultextension=".csv",
+            initialfile=f"movimientos_{fecha_str}.csv",
+            filetypes=[("CSV", "*.csv"), ("Todos", "*.*")],
+        )
+        if not path:
+            return
+
+        headers = ["Fecha", "Tipo", "Producto", "Cantidad", "Antes", "Después", "Usuario", "Motivo"]
+        try:
+            with open(path, "w", newline="", encoding="utf-8-sig") as f:
+                w = csv.writer(f)
+                w.writerow(headers)
+                w.writerows(rows)
+            self.show_info(f"Exportado correctamente:\n{path}")
+        except Exception as exc:
+            self.show_error(str(exc))
 
     def _abrir_calendario(self, var: tk.StringVar, widget):
         from tkcalendar import Calendar
@@ -240,7 +278,7 @@ class MovimientoModal(ctk.CTkToplevel):
         titulo, desc, color = _TIPO_INFO.get(tipo, (tipo, "", "#fff"))
         super().__init__(parent)
         self.title(titulo)
-        self.geometry("500x420")
+        self.geometry("520x500")
         self.resizable(False, False)
         self.grab_set()
         self.focus_set()
@@ -249,20 +287,21 @@ class MovimientoModal(ctk.CTkToplevel):
         self._get_session = get_session_fn
         self._color   = color
 
+        # Campos de lote/caducidad (se crean dinámicamente)
+        self._lote_entry:      ctk.CTkEntry   = None
+        self._cad_var:         tk.StringVar   = None
+        self._lote_sel_var:    tk.StringVar   = None
+        self._lotes_disponibles: list[dict]   = []
+
         self.update_idletasks()
-        x = (self.winfo_screenwidth() - 500) // 2
-        y = (self.winfo_screenheight() - 420) // 2
+        x = (self.winfo_screenwidth() - 520) // 2
+        y = (self.winfo_screenheight() - 500) // 2
         self.geometry(f"+{x}+{y}")
 
         self._build(titulo, desc, color)
-
         self.after(200, self._set_icon)
 
     def _set_icon(self):
-        import os
-        _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        ico_path = os.path.join(_ROOT, "icon_lab.png")
-        # busca el .ico que main.py ya generó en temp
         app = self.master
         while app and not hasattr(app, '_ico_path'):
             app = getattr(app, 'master', None)
@@ -283,11 +322,10 @@ class MovimientoModal(ctk.CTkToplevel):
                      font=ctk.CTkFont(size=15, weight="bold"),
                      text_color=color).pack(side="left", padx=16, pady=8)
 
-        #body = ctk.CTkFrame(self, fg_color="transparent")
         body = ctk.CTkScrollableFrame(self, fg_color="transparent")
-        #
         body.pack(fill="both", expand=True, padx=20, pady=12)
         body.grid_columnconfigure(0, weight=1)
+        self._body = body
 
         ctk.CTkLabel(body, text=desc, text_color="#9ca3af",
                      font=ctk.CTkFont(size=12)).grid(row=0, column=0, sticky="w", pady=(0, 12))
@@ -299,37 +337,45 @@ class MovimientoModal(ctk.CTkToplevel):
 
         with self._get_session() as s:
             prods = s.query(Producto).filter_by(estado="activo").order_by(Producto.nombre).all()
-            self._prod_map = {f"{p.nombre} [{p.referencia}]  —  stock: {int(p.cantidad_actual) if p.cantidad_actual == int(p.cantidad_actual) else p.cantidad_actual} {p.unidad}": p.id
-                              for p in prods}
+            self._prod_map = {
+                f"{p.nombre} [{p.referencia}]  —  stock: {int(p.cantidad_actual) if p.cantidad_actual == int(p.cantidad_actual) else p.cantidad_actual} {p.nombre_unidad}": p.id
+                for p in prods
+            }
 
         self._prod_var = tk.StringVar()
         self._prod_cb = ctk.CTkComboBox(
             body, variable=self._prod_var,
             values=list(self._prod_map.keys()),
             width=460, height=32, state="readonly",
+            command=self._on_product_change,
         )
-        self._prod_cb.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+        self._prod_cb.grid(row=2, column=0, sticky="ew", pady=(0, 6))
+
+        # Frame para campos dinámicos de lote
+        self._extra_frame = ctk.CTkFrame(body, fg_color="transparent")
+        self._extra_frame.grid(row=3, column=0, sticky="ew")
+        self._extra_frame.grid_columnconfigure(0, weight=1)
 
         # Cantidad
         ctk.CTkLabel(body, text="Cantidad *", text_color="#9ca3af",
                      font=ctk.CTkFont(size=12), anchor="w").grid(
-            row=3, column=0, sticky="w", pady=(0, 2))
+            row=4, column=0, sticky="w", pady=(0, 2))
         self._cant_entry = ctk.CTkEntry(body, height=32, placeholder_text="Ej: 5")
-        self._cant_entry.grid(row=4, column=0, sticky="ew", pady=(0, 10))
+        self._cant_entry.grid(row=5, column=0, sticky="ew", pady=(0, 10))
 
         # Motivo
         ctk.CTkLabel(body, text="Motivo / Notas", text_color="#9ca3af",
                      font=ctk.CTkFont(size=12), anchor="w").grid(
-            row=5, column=0, sticky="w", pady=(0, 2))
+            row=6, column=0, sticky="w", pady=(0, 2))
         self._motivo_tb = ctk.CTkTextbox(body, height=70)
-        self._motivo_tb.grid(row=6, column=0, sticky="ew", pady=(0, 10))
+        self._motivo_tb.grid(row=7, column=0, sticky="ew", pady=(0, 10))
 
         # Referencia doc
         ctk.CTkLabel(body, text="Referencia documento (opcional)", text_color="#9ca3af",
                      font=ctk.CTkFont(size=12), anchor="w").grid(
-            row=7, column=0, sticky="w", pady=(0, 2))
+            row=8, column=0, sticky="w", pady=(0, 2))
         self._ref_entry = ctk.CTkEntry(body, height=32, placeholder_text="Nº albarán, factura…")
-        self._ref_entry.grid(row=8, column=0, sticky="ew")
+        self._ref_entry.grid(row=9, column=0, sticky="ew")
 
         # Botones
         btn_bar = ctk.CTkFrame(self, fg_color="transparent", height=52)
@@ -343,8 +389,117 @@ class MovimientoModal(ctk.CTkToplevel):
                       fg_color=color, hover_color="#059669" if color == COLOR_SUCCESS else color,
                       width=120, height=34).pack(side="right", padx=4)
 
+    def _on_product_change(self, choice):
+        """Muestra campos de lote/caducidad según el tipo de movimiento y producto."""
+        from database import Producto, LoteProducto
+
+        # Limpiar frame extra
+        for w in self._extra_frame.winfo_children():
+            w.destroy()
+        self._lote_entry   = None
+        self._cad_var      = None
+        self._lote_sel_var = None
+        self._lotes_disponibles = []
+
+        prod_id = self._prod_map.get(choice)
+        if not prod_id:
+            return
+
+        with self._get_session() as s:
+            prod = s.query(Producto).get(prod_id)
+            if not prod:
+                return
+            tiene_lote = prod.tiene_lote
+            tiene_cad  = prod.tiene_caducidad
+            unidad_nom = prod.nombre_unidad
+
+            if self._tipo == "consumo":
+                lotes_raw = (s.query(LoteProducto)
+                             .filter(LoteProducto.producto_id == prod_id,
+                                     LoteProducto.cantidad > 0)
+                             .order_by(LoteProducto.fecha_caducidad.asc())
+                             .all())
+                from utils.helpers import fmt_fecha_corta
+                self._lotes_disponibles = [
+                    {
+                        "id": lt.id,
+                        "label": f"Lote {lt.numero_lote or '—'}  |  {lt.cantidad} {unidad_nom}  |  cad: {fmt_fecha_corta(lt.fecha_caducidad) if lt.fecha_caducidad else '—'}",
+                    }
+                    for lt in lotes_raw
+                ]
+
+        r = 0
+        if self._tipo == "entrada":
+            if tiene_lote:
+                ctk.CTkLabel(self._extra_frame, text="Nº Lote", text_color="#9ca3af",
+                             font=ctk.CTkFont(size=12), anchor="w").grid(
+                    row=r, column=0, sticky="w", pady=(4, 2)); r += 1
+                self._lote_entry = ctk.CTkEntry(self._extra_frame, height=32,
+                                                placeholder_text="Número de lote")
+                self._lote_entry.grid(row=r, column=0, sticky="ew", pady=(0, 8)); r += 1
+
+            if tiene_cad:
+                ctk.CTkLabel(self._extra_frame, text="Fecha de caducidad", text_color="#9ca3af",
+                             font=ctk.CTkFont(size=12), anchor="w").grid(
+                    row=r, column=0, sticky="w", pady=(4, 2)); r += 1
+                self._cad_var = tk.StringVar()
+                cad_entry = ctk.CTkEntry(self._extra_frame, textvariable=self._cad_var,
+                                         height=32, placeholder_text="DD/MM/AAAA")
+                cad_entry.grid(row=r, column=0, sticky="ew", pady=(0, 8)); r += 1
+                cad_entry.bind("<Button-1>",
+                               lambda e: self._abrir_calendario(self._cad_var, cad_entry))
+
+        elif self._tipo == "consumo" and self._lotes_disponibles:
+            ctk.CTkLabel(self._extra_frame, text="Seleccionar lote (opcional)",
+                         text_color="#9ca3af",
+                         font=ctk.CTkFont(size=12), anchor="w").grid(
+                row=r, column=0, sticky="w", pady=(4, 2)); r += 1
+            self._lote_sel_var = tk.StringVar()
+            labels = [lt["label"] for lt in self._lotes_disponibles]
+            ctk.CTkComboBox(self._extra_frame, variable=self._lote_sel_var,
+                            values=labels, height=32, state="readonly").grid(
+                row=r, column=0, sticky="ew", pady=(0, 8)); r += 1
+
+    def _abrir_calendario(self, var: tk.StringVar, widget):
+        from tkcalendar import Calendar
+        import datetime
+
+        top = ctk.CTkToplevel(self)
+        top.title("")
+        top.resizable(False, False)
+        top.grab_set()
+        top.update_idletasks()
+        wx = widget.winfo_rootx()
+        wy = widget.winfo_rooty() + widget.winfo_height()
+        top.geometry(f"+{wx}+{wy}")
+
+        try:
+            d = datetime.datetime.strptime(var.get(), "%d/%m/%Y").date()
+        except ValueError:
+            d = datetime.date.today()
+
+        cal = Calendar(top, selectmode="day",
+                       year=d.year, month=d.month, day=d.day,
+                       date_pattern="dd/mm/yyyy",
+                       background="#1e2329", foreground="white",
+                       headersbackground="#111827", headersforeground="#9ca3af",
+                       selectbackground="#10b981", selectforeground="white",
+                       normalbackground="#1e2329", normalforeground="white",
+                       weekendbackground="#1e2329", weekendforeground="#9ca3af",
+                       othermonthbackground="#111827", othermonthforeground="#4b5563",
+                       bordercolor="#2d333b")
+        cal.pack(padx=8, pady=8)
+
+        def _sel():
+            var.set(cal.get_date())
+            top.destroy()
+
+        ctk.CTkButton(top, text="Seleccionar", command=_sel,
+                      height=30, fg_color="#10b981", hover_color="#059669").pack(pady=(0, 8))
+
     def _guardar(self):
-        from database import Producto, MovimientoStock
+        from database import Producto, MovimientoStock, LoteProducto
+        from utils.helpers import parse_fecha
         from tkinter import messagebox
 
         prod_key = self._prod_var.get()
@@ -372,21 +527,42 @@ class MovimientoModal(ctk.CTkToplevel):
 
             if self._tipo in ("consumo", "baja") and cant > prod.cantidad_actual:
                 messagebox.showerror("Error",
-                    f"Stock insuficiente ({prod.cantidad_actual} {prod.unidad} disponibles).", parent=self)
+                    f"Stock insuficiente ({prod.cantidad_actual} {prod.nombre_unidad} disponibles).",
+                    parent=self)
                 return
 
             antes = prod.cantidad_actual
 
             if self._tipo == "entrada":
                 prod.cantidad_actual += cant
+                # Crear lote si hay datos
+                numero_lote = self._lote_entry.get().strip() if self._lote_entry else None
+                fecha_cad   = parse_fecha(self._cad_var.get()) if self._cad_var else None
+                if numero_lote or fecha_cad:
+                    s.add(LoteProducto(
+                        producto_id=prod.id,
+                        numero_lote=numero_lote or None,
+                        fecha_caducidad=fecha_cad,
+                        cantidad=cant,
+                    ))
+
             elif self._tipo in ("consumo", "baja"):
                 prod.cantidad_actual -= cant
                 if prod.cantidad_actual <= 0:
                     prod.cantidad_actual = 0
-                    if self._tipo == "consumo":
-                        prod.estado = "consumido"
-                    elif self._tipo == "baja":
-                        prod.estado = "baja"
+                    prod.estado = "consumido"
+
+                # Descontar del lote seleccionado (consumo)
+                if self._tipo == "consumo" and self._lote_sel_var and self._lotes_disponibles:
+                    sel_label = self._lote_sel_var.get()
+                    lote_id   = next(
+                        (lt["id"] for lt in self._lotes_disponibles if lt["label"] == sel_label),
+                        None,
+                    )
+                    if lote_id:
+                        lote = s.query(LoteProducto).get(lote_id)
+                        if lote:
+                            lote.cantidad = max(0.0, lote.cantidad - cant)
 
             s.add(MovimientoStock(
                 producto_id=prod.id,

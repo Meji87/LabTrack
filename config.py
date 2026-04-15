@@ -61,3 +61,10 @@ COLOR_HEADER_BG     = "#161b22"
 COLOR_CARD_BG       = "#21262d"
 COLOR_TABLE_BG      = "#0d1117"
 COLOR_TABLE_ROW_ALT = "#161b22"
+
+# ============================================================
+#  APLICACIÓN
+# ============================================================
+VERSION  = "1.0.0"
+AUTOR    = "Marc Mestres Mejias"
+CONTACTO = "mmestres@destileriasmg.com"

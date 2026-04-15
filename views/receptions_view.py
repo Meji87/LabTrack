@@ -37,7 +37,7 @@ class RecepcionesView(BaseView):
             ("factura",   "Factura",      110),
             ("recibido",  "Recibido por", 130),
         ]
-        tframe, self.tree = self.make_table(self, cols)
+        tframe, self.tree = self.make_sortable_table(self, cols)
         tframe.pack(fill="both", expand=True, padx=10, pady=10)
         self.tree.bind("<Double-1>", lambda _: self._ver_detalle())
 
@@ -242,6 +242,18 @@ class NuevaRecepcionModal(ctk.CTkToplevel):
             command=self._on_pedido_change,
         )
         self._ped_cb.grid(row=r, column=0, columnspan=2, sticky="w", padx=4, pady=(0, 8)); r += 1
+
+        # Fecha de recepción
+        from datetime import datetime as _dt
+        ctk.CTkLabel(self.content, text="Fecha de recepción",
+                     text_color="#9ca3af", font=ctk.CTkFont(size=12), anchor="w").grid(
+            row=r, column=0, columnspan=2, sticky="w", padx=4, pady=(4, 2)); r += 1
+        self._fecha_rec_var = tk.StringVar(value=_dt.now().strftime("%d/%m/%Y"))
+        fecha_entry = ctk.CTkEntry(self.content, textvariable=self._fecha_rec_var,
+                                   width=140, height=32)
+        fecha_entry.grid(row=r, column=0, columnspan=2, sticky="w", padx=4, pady=(0, 8)); r += 1
+        fecha_entry.bind("<Button-1>",
+                         lambda e: self._abrir_calendario(self._fecha_rec_var, fecha_entry))
 
         # Campos de recepción
         for lbl, attr in [("Nº Albarán", "_alb_entry"), ("Nº Factura", "_fac_entry")]:
@@ -463,9 +475,14 @@ class NuevaRecepcionModal(ctk.CTkToplevel):
             ruta_alb = guardar_documento(self._albaran_path, "albaran", alb_num) if self._albaran_path else None
             ruta_fac = guardar_documento(self._factura_path, "factura", fac_num) if self._factura_path else None
 
+            from utils.helpers import parse_fecha
+            fecha_rec = parse_fecha(self._fecha_rec_var.get())
+            from datetime import datetime as _dtutil
+            fecha_rec_dt = _dtutil.combine(fecha_rec, _dtutil.min.time()) if fecha_rec else _dtutil.utcnow()
+
             rec = Recepcion(
                 pedido_id=ped_id,
-                fecha_recepcion=datetime.utcnow(),
+                fecha_recepcion=fecha_rec_dt,
                 numero_albaran=self._alb_entry.get().strip() or None,
                 numero_factura=self._fac_entry.get().strip() or None,
                 archivo_albaran=ruta_alb,
@@ -521,7 +538,18 @@ class NuevaRecepcionModal(ctk.CTkToplevel):
                     referencia_doc=self._alb_entry.get().strip() or ped.numero,
                 ))
 
-            ped.estado = "recibido"
+            # Recepción parcial: solo marcar como recibido si todas las líneas tienen cantidad completa
+            all_received = True
+            for linea in ped.lineas:
+                var = self._cant_vars.get(linea.id)
+                try:
+                    cant_recib = float(var.get() or "0") if var else 0.0
+                except ValueError:
+                    cant_recib = 0.0
+                if cant_recib < linea.cantidad_pedida:
+                    all_received = False
+                    break
+            ped.estado = "recibido" if all_received else "pendiente"
             s.flush()
 
             # Asignar recepcion_id a los lotes recién creados

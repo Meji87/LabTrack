@@ -31,7 +31,7 @@ class ProductosView(BaseView):
     def _build(self):
         # Cabecera
         hdr = self.make_header(self, "Productos",
-                               "+ Nuevo Producto", self._nuevo, solo_admin=True)
+                               "+ Nuevo Producto", self._nuevo)
         hdr.pack(fill="x")
 
         # Filtros
@@ -81,7 +81,7 @@ class ProductosView(BaseView):
             ("estado",    "Estado",       80),
             ("ubicacion", "Ubicación",   110),
         ]
-        tframe, self.tree = self.make_table(self, cols)
+        tframe, self.tree = self.make_sortable_table(self, cols)
         tframe.pack(fill="both", expand=True, padx=10, pady=6)
         self.tree.bind("<Double-1>", lambda _: self._ver_detalle())
 
@@ -92,10 +92,16 @@ class ProductosView(BaseView):
 
         ctk.CTkButton(bar, text="Ver detalle", command=self._ver_detalle,
                       width=120, height=32).pack(side="left", padx=4)
-        if self.current_user.es_admin:
-            ctk.CTkButton(bar, text="Editar", command=self._editar,
-                          fg_color="#374151", hover_color="#4b5563",
-                          width=90, height=32).pack(side="left", padx=4)
+        ctk.CTkButton(bar, text="🧪 Ver lotes", command=self._ver_lotes,
+                      fg_color="#1e3a5f", hover_color="#1e40af",
+                      width=110, height=32).pack(side="left", padx=4)
+        ctk.CTkButton(bar, text="Editar", command=self._editar,
+                      fg_color="#374151", hover_color="#4b5563",
+                      width=90, height=32).pack(side="left", padx=4)
+
+        ctk.CTkButton(bar, text="📥 Exportar CSV", command=self._exportar_csv,
+                      fg_color="#374151", hover_color="#4b5563",
+                      width=130, height=32).pack(side="right", padx=4)
 
     # ─────────────────────────────────────────────────────
     #  DATOS
@@ -142,10 +148,6 @@ class ProductosView(BaseView):
                         continue
 
                     tags = ()
-                    # if p.caducado:
-                    #     tags = ("caducado",)
-                    # elif p.por_caducar:
-                    #     tags = ("por_caducar",)
                     if p.stock_bajo:
                         tags = ("stock_bajo",)
 
@@ -155,17 +157,17 @@ class ProductosView(BaseView):
                         p.categoria.nombre if p.categoria else "—",
                         fmt_qty(p.cantidad_actual),
                         fmt_qty(p.cantidad_minima),
-                        p.unidad or "—",
-                        "—",             # p.numero_lote or "—"
-                        "-",             #fmt_fecha_corta(p.fecha_caducidad)
+                        p.nombre_unidad or "—",
+                        "—",
+                        "-",
                         p.estado,
-                        p.ubicacion or "—",
+                        p.nombre_ubicacion or "—",
                     ), tags=tags)
 
         except Exception as exc:
             self.show_error(str(exc))
 
-        self.tree.tag_configure("caducado",   background="#4a1212")
+        self.tree.tag_configure("caducado",    background="#4a1212")
         self.tree.tag_configure("por_caducar", background="#4a3212")
         self.tree.tag_configure("stock_bajo",  background="#122a4a")
 
@@ -180,6 +182,60 @@ class ProductosView(BaseView):
         pid = self._selected_id()
         if pid:
             DetalleProductoModal(self, pid)
+
+    def _ver_lotes(self):
+        pid = self._selected_id()
+        if not pid:
+            return
+        from database import Producto
+        try:
+            with self.get_session() as s:
+                p = s.query(Producto).get(pid)
+                if not p:
+                    return
+                if not (p.tiene_lote or p.tiene_caducidad):
+                    self.show_info("Este producto no usa lotes ni tiene fecha de caducidad.")
+                    return
+                nombre = p.nombre
+        except Exception as exc:
+            self.show_error(str(exc))
+            return
+        LotesProductoModal(self, pid, nombre)
+
+    def _exportar_csv(self):
+        from tkinter import filedialog
+        import csv
+        from datetime import datetime
+
+        rows = []
+        for iid in self.tree.get_children():
+            rows.append(self.tree.item(iid, "values"))
+
+        if not rows:
+            self.show_info("No hay datos para exportar.")
+            return
+
+        fecha_str = datetime.now().strftime("%Y%m%d")
+        path = filedialog.asksaveasfilename(
+            parent=self.winfo_toplevel(),
+            title="Exportar productos",
+            defaultextension=".csv",
+            initialfile=f"productos_{fecha_str}.csv",
+            filetypes=[("CSV", "*.csv"), ("Todos", "*.*")],
+        )
+        if not path:
+            return
+
+        headers = ["Nombre", "Referencia", "Categoría", "Stock", "Mínimo",
+                   "Unidad", "Lote", "Caducidad", "Estado", "Ubicación"]
+        try:
+            with open(path, "w", newline="", encoding="utf-8-sig") as f:
+                w = csv.writer(f)
+                w.writerow(headers)
+                w.writerows(rows)
+            self.show_info(f"Exportado correctamente:\n{path}")
+        except Exception as exc:
+            self.show_error(str(exc))
 
     def _nuevo(self):
         m = ProductoFormModal(self, None, self.current_user)
@@ -224,13 +280,13 @@ class DetalleProductoModal(ModalBase):
                     ("Referencia",   p.referencia),
                     ("Categoría",    p.categoria.nombre if p.categoria else "—"),
                     ("Proveedor",    p.proveedor.nombre if p.proveedor else "—"),
-                    ("Stock actual", fmt_qty(p.cantidad_actual, p.unidad)),
-                    ("Stock mínimo", fmt_qty(p.cantidad_minima, p.unidad)),
+                    ("Stock actual", fmt_qty(p.cantidad_actual, p.nombre_unidad)),
+                    ("Stock mínimo", fmt_qty(p.cantidad_minima, p.nombre_unidad)),
                     ("Usa lotes",    "Sí" if p.tiene_lote else "No"),
                     ("Caduca",       "Sí" if p.tiene_caducidad else "No"),
                     ("Lotes activos", str(len(p.lotes))),
                     ("Estado",       p.estado),
-                    ("Ubicación",    p.ubicacion or "—"),
+                    ("Ubicación",    p.nombre_ubicacion or "—"),
                     ("Descripción",  p.descripcion or "—"),
                 ]
                 for i, (lbl, val) in enumerate(campos):
@@ -303,13 +359,96 @@ class DetalleProductoModal(ModalBase):
 
 
 # ─────────────────────────────────────────────────────────
+#  MODAL VER LOTES
+# ─────────────────────────────────────────────────────────
+
+class LotesProductoModal(ModalBase):
+    def __init__(self, parent, producto_id: int, nombre: str):
+        super().__init__(parent, f"Lotes — {nombre}", ancho=620, alto=420)
+        self._pid = producto_id
+        self._load()
+        ctk.CTkButton(self.btn_bar, text="Cerrar", command=self.destroy,
+                      fg_color="#374151", hover_color="#4b5563",
+                      width=100).pack(side="right")
+
+    def _load(self):
+        from database import LoteProducto, get_session
+        from utils.helpers import fmt_fecha_corta
+        from datetime import date
+
+        apply_treeview_style()
+        tf = ctk.CTkFrame(self.content, fg_color="#1c1c1c", corner_radius=6)
+        tf.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=4, pady=4)
+        self.content.grid_rowconfigure(0, weight=1)
+        self.content.grid_columnconfigure(0, weight=1)
+
+        from tkinter import ttk
+        tree = ttk.Treeview(
+            tf,
+            columns=("lote", "cantidad", "caducidad", "dias"),
+            show="headings", style="LabTrack.Treeview",
+        )
+        for cid, ctxt, cw, anch in [
+            ("lote",      "Nº Lote",        180, "w"),
+            ("cantidad",  "Cantidad",         90, "e"),
+            ("caducidad", "Caducidad",       110, "w"),
+            ("dias",      "Días restantes",  120, "e"),
+        ]:
+            tree.heading(cid, text=ctxt, anchor=anch)
+            tree.column(cid, width=cw, anchor=anch)
+
+        vsb = ttk.Scrollbar(tf, orient="vertical", command=tree.yview,
+                            style="LabTrack.Vertical.TScrollbar")
+        tree.configure(yscrollcommand=vsb.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        tf.grid_rowconfigure(0, weight=1)
+        tf.grid_columnconfigure(0, weight=1)
+
+        tree.tag_configure("caducado",    foreground="#ef4444")
+        tree.tag_configure("por_caducar", foreground="#f59e0b")
+
+        try:
+            with get_session() as s:
+                lotes = (s.query(LoteProducto)
+                         .filter_by(producto_id=self._pid)
+                         .order_by(LoteProducto.fecha_caducidad.asc())
+                         .all())
+                today = date.today()
+                for lt in lotes:
+                    if lt.fecha_caducidad:
+                        dias = (lt.fecha_caducidad - today).days
+                        cad_str = fmt_fecha_corta(lt.fecha_caducidad)
+                        dias_str = str(dias)
+                        if dias < 0:
+                            tag = ("caducado",)
+                        elif dias < 30:
+                            tag = ("por_caducar",)
+                        else:
+                            tag = ()
+                    else:
+                        dias_str = "—"
+                        cad_str  = "—"
+                        tag      = ()
+
+                    tree.insert("", "end", values=(
+                        lt.numero_lote or "—",
+                        lt.cantidad,
+                        cad_str,
+                        dias_str,
+                    ), tags=tag)
+        except Exception as exc:
+            import traceback; traceback.print_exc()
+
+
+# ─────────────────────────────────────────────────────────
 #  MODAL CREAR / EDITAR
 # ─────────────────────────────────────────────────────────
 
 class ProductoFormModal(ModalBase):
     def __init__(self, parent, producto_id, current_user):
         titulo = "Nuevo Producto" if producto_id is None else "Editar Producto"
-        super().__init__(parent, titulo, ancho=540, alto=620)
+        super().__init__(parent, titulo, ancho=540, alto=660)
         self._pid  = producto_id
         self._user = current_user
         self._build_form()
@@ -322,7 +461,7 @@ class ProductoFormModal(ModalBase):
         return get_session()
 
     def _build_form(self):
-        from database import Categoria, Proveedor, UNIDADES, ESTADOS_PRODUCTO
+        from database import Categoria, Proveedor, Unidad, Ubicacion, ESTADOS_PRODUCTO
 
         r = 0
         self.add_label("Nombre *", r); r += 1
@@ -331,16 +470,18 @@ class ProductoFormModal(ModalBase):
         self.add_label("Referencia *", r); r += 1
         self.e_ref = self.add_entry(r, "Código / referencia única"); r += 1
 
-        self.add_label("Categoría", r); r += 1
         with self._get_session() as s:
-            cats = [c.nombre for c in s.query(Categoria).order_by(Categoria.nombre).all()]
+            cats  = [c.nombre for c in s.query(Categoria).order_by(Categoria.nombre).all()]
             provs = [p.nombre for p in s.query(Proveedor).filter_by(activo=True).order_by(Proveedor.nombre).all()]
+            units = [u.nombre for u in s.query(Unidad).order_by(Unidad.nombre).all()]
+            ubics = [u.nombre for u in s.query(Ubicacion).order_by(Ubicacion.nombre).all()]
+
+        self.add_label("Categoría", r); r += 1
         self.e_cat = self.add_combo(r, ["— Sin categoría —"] + cats); r += 1
 
         self.add_label("Proveedor", r); r += 1
         self.e_prov = self.add_combo(r, ["— Sin proveedor —"] + provs); r += 1
 
-        # Dos columnas: stock actual / mínimo
         self.add_label("Stock actual", r); r += 1
         self.e_stock = self.add_entry(r, "0"); r += 1
 
@@ -348,13 +489,7 @@ class ProductoFormModal(ModalBase):
         self.e_min = self.add_entry(r, "0"); r += 1
 
         self.add_label("Unidad", r); r += 1
-        self.e_unidad = self.add_combo(r, UNIDADES); r += 1
-
-        # self.add_label("Nº lote", r); r += 1
-        # self.e_lote = self.add_entry(r, "Número de lote"); r += 1
-
-        # self.add_label("Fecha caducidad (DD/MM/AAAA)", r); r += 1
-        # self.e_cad = self.add_entry(r, "01/01/2025"); r += 1
+        self.e_unidad = self.add_combo(r, units if units else ["unidades"]); r += 1
 
         self.add_label("Trazabilidad", r); r += 1
         self._tiene_lote_var = tk.BooleanVar(value=False)
@@ -367,7 +502,7 @@ class ProductoFormModal(ModalBase):
             row=r, column=0, columnspan=2, sticky="w", padx=4, pady=2); r += 1
 
         self.add_label("Ubicación", r); r += 1
-        self.e_ubic = self.add_entry(r, "Ej: Nevera 1, Armario 3…"); r += 1
+        self.e_ubic = self.add_combo(r, ["— Sin ubicación —"] + ubics); r += 1
 
         self.add_label("Estado", r); r += 1
         self.e_estado = self.add_combo(r, ESTADOS_PRODUCTO); r += 1
@@ -376,8 +511,7 @@ class ProductoFormModal(ModalBase):
         self.e_desc = self.add_textbox(r, height=60); r += 1
 
     def _load_data(self):
-        from database import Producto, Categoria, Proveedor
-        from utils.helpers import fmt_fecha_corta
+        from database import Producto
 
         with self._get_session() as s:
             p = s.query(Producto).get(self._pid)
@@ -398,18 +532,23 @@ class ProductoFormModal(ModalBase):
 
             _set(self.e_stock, int(p.cantidad_actual) if p.cantidad_actual == int(p.cantidad_actual) else p.cantidad_actual)
             _set(self.e_min,   int(p.cantidad_minima) if p.cantidad_minima == int(p.cantidad_minima) else p.cantidad_minima)
-            self.e_unidad.set(p.unidad or "unidades")
-            # _set(self.e_lote,  p.numero_lote or "")
-            # _set(self.e_cad,   fmt_fecha_corta(p.fecha_caducidad) if p.fecha_caducidad else "")
+
+            unidad_nombre = p.nombre_unidad
+            if unidad_nombre:
+                self.e_unidad.set(unidad_nombre)
+
             self._tiene_lote_var.set(bool(p.tiene_lote))
             self._tiene_cad_var.set(bool(p.tiene_caducidad))
-            _set(self.e_ubic,  p.ubicacion or "")
+
+            ubic_nombre = p.nombre_ubicacion
+            if ubic_nombre:
+                self.e_ubic.set(ubic_nombre)
+
             self.e_estado.set(p.estado or "activo")
             self.set_tb(self.e_desc, p.descripcion or "")
 
     def _guardar(self):
-        from database import Producto, Categoria, Proveedor
-        from utils.helpers import parse_fecha
+        from database import Producto, Categoria, Proveedor, Unidad, Ubicacion
 
         nombre = self.e_nombre.get().strip()
         ref    = self.e_ref.get().strip()
@@ -424,17 +563,14 @@ class ProductoFormModal(ModalBase):
             self.show_error("Stock y mínimo deben ser números.")
             return
 
-        # cad_str = self.e_cad.get().strip()
-        # cad = parse_fecha(cad_str) if cad_str else None
-        # if cad_str and not cad:
-        #     self.show_error("Fecha de caducidad no válida (usa DD/MM/AAAA).")
-        #     return
-
         with self._get_session() as s:
             # Resolver IDs
-            cat_nombre  = self.e_cat.get()
-            prov_nombre = self.e_prov.get()
-            cat_id = prov_id = None
+            cat_nombre   = self.e_cat.get()
+            prov_nombre  = self.e_prov.get()
+            unit_nombre  = self.e_unidad.get()
+            ubic_nombre  = self.e_ubic.get()
+            cat_id = prov_id = unit_id = ubic_id = None
+
             if cat_nombre and "Sin" not in cat_nombre:
                 cat = s.query(Categoria).filter_by(nombre=cat_nombre).first()
                 if cat:
@@ -443,9 +579,16 @@ class ProductoFormModal(ModalBase):
                 prov = s.query(Proveedor).filter_by(nombre=prov_nombre).first()
                 if prov:
                     prov_id = prov.id
+            if unit_nombre:
+                unit = s.query(Unidad).filter_by(nombre=unit_nombre).first()
+                if unit:
+                    unit_id = unit.id
+            if ubic_nombre and "Sin" not in ubic_nombre:
+                ubic = s.query(Ubicacion).filter_by(nombre=ubic_nombre).first()
+                if ubic:
+                    ubic_id = ubic.id
 
             if self._pid is None:
-                # Verificar referencia única
                 if s.query(Producto).filter_by(referencia=ref).first():
                     self.show_error(f"Ya existe un producto con referencia '{ref}'.")
                     return
@@ -467,12 +610,12 @@ class ProductoFormModal(ModalBase):
             p.proveedor_id    = prov_id
             p.cantidad_actual = stock
             p.cantidad_minima = mini
-            p.unidad          = self.e_unidad.get()
-            # p.numero_lote     = self.e_lote.get().strip() or None
-            # p.fecha_caducidad = cad
+            p.unidad          = unit_nombre   # mantener texto legacy
+            p.unidad_id       = unit_id
             p.tiene_lote      = self._tiene_lote_var.get()
             p.tiene_caducidad = self._tiene_cad_var.get()
-            p.ubicacion       = self.e_ubic.get().strip() or None
+            p.ubicacion       = ubic_nombre if ubic_nombre and "Sin" not in ubic_nombre else None
+            p.ubicacion_id    = ubic_id
             p.estado          = self.e_estado.get()
             p.descripcion     = self.get_tb(self.e_desc) or None
 

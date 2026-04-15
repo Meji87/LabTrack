@@ -7,7 +7,7 @@ import os
 import sys
 from datetime import datetime, date
 from sqlalchemy import (
-    create_engine, event,
+    create_engine, event, text,
     Column, Integer, String, Float, Boolean, DateTime, Date, Text, ForeignKey,
 )
 from sqlalchemy.orm import DeclarativeBase, relationship, sessionmaker
@@ -100,6 +100,38 @@ class Categoria(Base):
 
 
 # ─────────────────────────────────────────────────────────
+#  UBICACIONES
+# ─────────────────────────────────────────────────────────
+
+class Ubicacion(Base):
+    __tablename__ = "ubicaciones"
+
+    id     = Column(Integer, primary_key=True)
+    nombre = Column(String(100), unique=True, nullable=False)
+
+    productos = relationship("Producto", back_populates="ubicacion_rel")
+
+    def __repr__(self):
+        return f"<Ubicacion {self.nombre}>"
+
+
+# ─────────────────────────────────────────────────────────
+#  UNIDADES
+# ─────────────────────────────────────────────────────────
+
+class Unidad(Base):
+    __tablename__ = "unidades"
+
+    id     = Column(Integer, primary_key=True)
+    nombre = Column(String(50), unique=True, nullable=False)
+
+    productos = relationship("Producto", back_populates="unidad_rel")
+
+    def __repr__(self):
+        return f"<Unidad {self.nombre}>"
+
+
+# ─────────────────────────────────────────────────────────
 #  PRODUCTOS
 # ─────────────────────────────────────────────────────────
 
@@ -128,13 +160,29 @@ class Producto(Base):
     estado          = Column(String(20), default="activo")
     descripcion     = Column(Text)
     ubicacion       = Column(String(100))
+    unidad_id       = Column(Integer, ForeignKey("unidades.id"), nullable=True)
+    ubicacion_id    = Column(Integer, ForeignKey("ubicaciones.id"), nullable=True)
     creado_en       = Column(DateTime, default=datetime.utcnow)
     actualizado_en  = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    categoria    = relationship("Categoria", back_populates="productos")
-    proveedor    = relationship("Proveedor", back_populates="productos")
-    movimientos  = relationship("MovimientoStock", back_populates="producto")
+    categoria     = relationship("Categoria",  back_populates="productos")
+    proveedor     = relationship("Proveedor",  back_populates="productos")
+    movimientos   = relationship("MovimientoStock", back_populates="producto")
     lineas_pedido = relationship("LineaPedido", back_populates="producto")
+    ubicacion_rel = relationship("Ubicacion",  back_populates="productos")
+    unidad_rel    = relationship("Unidad",     back_populates="productos")
+
+    @property
+    def nombre_unidad(self) -> str:
+        if self.unidad_rel:
+            return self.unidad_rel.nombre
+        return self.unidad or ""
+
+    @property
+    def nombre_ubicacion(self) -> str:
+        if self.ubicacion_rel:
+            return self.ubicacion_rel.nombre
+        return self.ubicacion or ""
 
     @property
     def stock_bajo(self) -> bool:
@@ -314,6 +362,18 @@ def init_db():
     Base.metadata.create_all(engine)
     os.makedirs(DOCUMENTOS_PATH, exist_ok=True)
 
+    # Migraciones: añadir columnas FK a tabla productos si no existen
+    with engine.connect() as conn:
+        for sql in [
+            "ALTER TABLE productos ADD COLUMN unidad_id INTEGER REFERENCES unidades(id)",
+            "ALTER TABLE productos ADD COLUMN ubicacion_id INTEGER REFERENCES ubicaciones(id)",
+        ]:
+            try:
+                conn.execute(text(sql))
+                conn.commit()
+            except Exception:
+                pass  # columna ya existe
+
     with SessionLocal() as s:
         # Admin por defecto
         if not s.query(Usuario).filter_by(email="admin@labtrack.com").first():
@@ -326,5 +386,10 @@ def init_db():
                         "Equipamiento", "Soluciones", "Antibióticos", "Enzimas", "Otro"]:
             if not s.query(Categoria).filter_by(nombre=nombre).first():
                 s.add(Categoria(nombre=nombre))
+
+        # Unidades por defecto
+        for nombre in UNIDADES:
+            if not s.query(Unidad).filter_by(nombre=nombre).first():
+                s.add(Unidad(nombre=nombre))
 
         s.commit()

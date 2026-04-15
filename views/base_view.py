@@ -163,6 +163,42 @@ class BaseView(ctk.CTkFrame):
 
         return frame, tree
 
+    def make_sortable_table(self, parent, cols: list[tuple]) -> tuple:
+        """
+        Igual que make_table pero con cabeceras clicables para ordenar.
+        Alterna ascendente/descendente; intenta orden numérico antes que alfabético.
+        """
+        frame, tree = self.make_table(parent, cols)
+        tree._orig_headings = {c[0]: c[1] for c in cols}
+        tree._sort_state: dict[str, bool] = {}
+
+        def _sort(col_id: str):
+            items = [(tree.set(k, col_id), k) for k in tree.get_children("")]
+            desc = not tree._sort_state.get(col_id, False)
+            try:
+                items.sort(
+                    key=lambda x: float(x[0].replace(" ", "").replace(",", ".")),
+                    reverse=desc,
+                )
+            except ValueError:
+                items.sort(key=lambda x: x[0].lower(), reverse=desc)
+            for i, (_, k) in enumerate(items):
+                tree.move(k, "", i)
+            tree._sort_state[col_id] = desc
+            for c in tree["columns"]:
+                orig   = tree._orig_headings.get(c, c)
+                anchor = next(
+                    (col[3] if len(col) > 3 else "w" for col in cols if col[0] == c), "w"
+                )
+                arrow  = (" ↓" if desc else " ↑") if c == col_id else ""
+                tree.heading(c, text=orig + arrow, anchor=anchor)
+
+        for col in cols:
+            cid = col[0]
+            tree.heading(cid, command=lambda c=cid: _sort(c))
+
+        return frame, tree
+
     def refresh(self):
         """Recargar datos. Sobreescribir en subclases."""
         pass

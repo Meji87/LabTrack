@@ -1,5 +1,5 @@
 """
-admin_view.py — Gestión de usuarios y categorías (solo admin)
+admin_view.py — Gestión de usuarios, categorías, ubicaciones y unidades (solo admin)
 """
 
 import os
@@ -31,11 +31,15 @@ class AdminView(BaseView):
         tabs = ctk.CTkTabview(self)
         tabs.pack(fill="both", expand=True, padx=10, pady=8)
 
-        tab_users = tabs.add("Usuarios")
-        tab_cats  = tabs.add("Categorías")
+        tab_users  = tabs.add("Usuarios")
+        tab_cats   = tabs.add("Categorías")
+        tab_ubics  = tabs.add("Ubicaciones")
+        tab_units  = tabs.add("Unidades")
 
         self._build_users(tab_users)
         self._build_cats(tab_cats)
+        self._build_ubics(tab_ubics)
+        self._build_units(tab_units)
 
     # ─────────────────────────────────────────────────────
     #  TAB USUARIOS
@@ -56,7 +60,7 @@ class AdminView(BaseView):
             ("activo",    "Estado",     80),
             ("creado",    "Registrado", 130),
         ]
-        tframe, self.user_tree = self.make_table(parent, cols)
+        tframe, self.user_tree = self.make_sortable_table(parent, cols)
         tframe.pack(fill="both", expand=True, pady=(0, 6))
         self.user_tree.bind("<Double-1>", lambda _: self._editar_usuario())
 
@@ -150,7 +154,7 @@ class AdminView(BaseView):
             ("descripcion", "Descripción", 300),
             ("productos",   "Productos",    90, "e"),
         ]
-        tframe, self.cat_tree = self.make_table(parent, cols)
+        tframe, self.cat_tree = self.make_sortable_table(parent, cols)
         tframe.pack(fill="both", expand=True, pady=(0, 6))
 
         bar = ctk.CTkFrame(parent, fg_color="transparent", height=44)
@@ -221,12 +225,196 @@ class AdminView(BaseView):
             self.show_error(str(exc))
 
     # ─────────────────────────────────────────────────────
+    #  TAB UBICACIONES
+    # ─────────────────────────────────────────────────────
+
+    def _build_ubics(self, parent):
+        top = ctk.CTkFrame(parent, fg_color="transparent", height=52)
+        top.pack(fill="x", pady=(4, 6))
+        top.pack_propagate(False)
+
+        self._nueva_ubic_var = tk.StringVar()
+        ctk.CTkEntry(top, textvariable=self._nueva_ubic_var,
+                     placeholder_text="Nombre de nueva ubicación",
+                     width=240, height=32).pack(side="left", padx=4, pady=10)
+        ctk.CTkButton(top, text="+ Añadir", command=self._nueva_ubic,
+                      fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT_HOVER,
+                      width=90, height=32).pack(side="left", padx=4)
+
+        cols = [
+            ("nombre",    "Nombre",    250),
+            ("productos", "Productos",  90, "e"),
+        ]
+        tframe, self.ubic_tree = self.make_sortable_table(parent, cols)
+        tframe.pack(fill="both", expand=True, pady=(0, 6))
+
+        bar = ctk.CTkFrame(parent, fg_color="transparent", height=44)
+        bar.pack(fill="x")
+        bar.pack_propagate(False)
+        ctk.CTkButton(bar, text="Eliminar ubicación", command=self._eliminar_ubic,
+                      fg_color="#7f1d1d", hover_color="#991b1b",
+                      width=150, height=32).pack(side="left", padx=4)
+        ctk.CTkLabel(bar, text="Solo se puede eliminar si no tiene productos asignados",
+                     font=ctk.CTkFont(size=11), text_color="#6b7280").pack(side="left", padx=8)
+
+    def _load_ubics(self):
+        from database import Ubicacion
+
+        for row in self.ubic_tree.get_children():
+            self.ubic_tree.delete(row)
+
+        try:
+            with self.get_session() as s:
+                ubics = s.query(Ubicacion).order_by(Ubicacion.nombre).all()
+                for u in ubics:
+                    n_prod = len(u.productos)
+                    self.ubic_tree.insert("", "end", iid=str(u.id), values=(
+                        u.nombre, n_prod,
+                    ))
+        except Exception as exc:
+            self.show_error(str(exc))
+
+    def _nueva_ubic(self):
+        nombre = self._nueva_ubic_var.get().strip()
+        if not nombre:
+            self.show_error("Escribe el nombre de la ubicación.")
+            return
+        from database import Ubicacion
+        try:
+            with self.get_session() as s:
+                if s.query(Ubicacion).filter_by(nombre=nombre).first():
+                    self.show_error(f"Ya existe la ubicación '{nombre}'.")
+                    return
+                s.add(Ubicacion(nombre=nombre))
+                s.commit()
+            self._nueva_ubic_var.set("")
+            self._load_ubics()
+        except Exception as exc:
+            self.show_error(str(exc))
+
+    def _eliminar_ubic(self):
+        sel = self.ubic_tree.selection()
+        if not sel:
+            self.show_error("Selecciona una ubicación.")
+            return
+        uid = int(sel[0])
+        from database import Ubicacion
+        try:
+            with self.get_session() as s:
+                u = s.query(Ubicacion).get(uid)
+                if not u:
+                    return
+                if u.productos:
+                    self.show_error(f"No se puede eliminar '{u.nombre}': tiene {len(u.productos)} productos.")
+                    return
+                if not self.confirm(f"¿Eliminar la ubicación '{u.nombre}'?"):
+                    return
+                s.delete(u)
+                s.commit()
+            self._load_ubics()
+        except Exception as exc:
+            self.show_error(str(exc))
+
+    # ─────────────────────────────────────────────────────
+    #  TAB UNIDADES
+    # ─────────────────────────────────────────────────────
+
+    def _build_units(self, parent):
+        top = ctk.CTkFrame(parent, fg_color="transparent", height=52)
+        top.pack(fill="x", pady=(4, 6))
+        top.pack_propagate(False)
+
+        self._nueva_unit_var = tk.StringVar()
+        ctk.CTkEntry(top, textvariable=self._nueva_unit_var,
+                     placeholder_text="Nombre de nueva unidad",
+                     width=240, height=32).pack(side="left", padx=4, pady=10)
+        ctk.CTkButton(top, text="+ Añadir", command=self._nueva_unit,
+                      fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT_HOVER,
+                      width=90, height=32).pack(side="left", padx=4)
+
+        cols = [
+            ("nombre",    "Nombre",    250),
+            ("productos", "Productos",  90, "e"),
+        ]
+        tframe, self.unit_tree = self.make_sortable_table(parent, cols)
+        tframe.pack(fill="both", expand=True, pady=(0, 6))
+
+        bar = ctk.CTkFrame(parent, fg_color="transparent", height=44)
+        bar.pack(fill="x")
+        bar.pack_propagate(False)
+        ctk.CTkButton(bar, text="Eliminar unidad", command=self._eliminar_unit,
+                      fg_color="#7f1d1d", hover_color="#991b1b",
+                      width=140, height=32).pack(side="left", padx=4)
+        ctk.CTkLabel(bar, text="Solo se puede eliminar si no tiene productos asignados",
+                     font=ctk.CTkFont(size=11), text_color="#6b7280").pack(side="left", padx=8)
+
+    def _load_units(self):
+        from database import Unidad
+
+        for row in self.unit_tree.get_children():
+            self.unit_tree.delete(row)
+
+        try:
+            with self.get_session() as s:
+                units = s.query(Unidad).order_by(Unidad.nombre).all()
+                for u in units:
+                    n_prod = len(u.productos)
+                    self.unit_tree.insert("", "end", iid=str(u.id), values=(
+                        u.nombre, n_prod,
+                    ))
+        except Exception as exc:
+            self.show_error(str(exc))
+
+    def _nueva_unit(self):
+        nombre = self._nueva_unit_var.get().strip()
+        if not nombre:
+            self.show_error("Escribe el nombre de la unidad.")
+            return
+        from database import Unidad
+        try:
+            with self.get_session() as s:
+                if s.query(Unidad).filter_by(nombre=nombre).first():
+                    self.show_error(f"Ya existe la unidad '{nombre}'.")
+                    return
+                s.add(Unidad(nombre=nombre))
+                s.commit()
+            self._nueva_unit_var.set("")
+            self._load_units()
+        except Exception as exc:
+            self.show_error(str(exc))
+
+    def _eliminar_unit(self):
+        sel = self.unit_tree.selection()
+        if not sel:
+            self.show_error("Selecciona una unidad.")
+            return
+        uid = int(sel[0])
+        from database import Unidad
+        try:
+            with self.get_session() as s:
+                u = s.query(Unidad).get(uid)
+                if not u:
+                    return
+                if u.productos:
+                    self.show_error(f"No se puede eliminar '{u.nombre}': tiene {len(u.productos)} productos.")
+                    return
+                if not self.confirm(f"¿Eliminar la unidad '{u.nombre}'?"):
+                    return
+                s.delete(u)
+                s.commit()
+            self._load_units()
+        except Exception as exc:
+            self.show_error(str(exc))
+
+    # ─────────────────────────────────────────────────────
     #  REFRESH GLOBAL
     # ─────────────────────────────────────────────────────
 
     def refresh(self):
         self._load_users()
         self._load_cats()
+        self._load_ubics()
+        self._load_units()
 
 
 # ─────────────────────────────────────────────────────────
