@@ -1,0 +1,8 @@
+# LabTrack Desktop — Dependencias Python
+# Instalar con: pip install -r requirements.txt
+
+customtkinter>=5.2.0       # Interfaz gráfica moderna
+SQLAlchemy>=2.0.0          # ORM para SQLite
+Werkzeug>=3.0.0            # Hashing de contraseñas (generate_password_hash)
+Pillow>=10.0.0             # Soporte de imágenes en CustomTkinter
+tkcalendar
